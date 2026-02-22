@@ -51,18 +51,27 @@ python --version
 
 ### Step 4: Install the Bridge
 
-Open a terminal and run:
+Open a terminal and clone the repos:
 
 ```
-pip install sendspin-jack-bridge
+git clone https://github.com/Sendspin/aiosendspin.git
+git clone https://github.com/Sendspin/sendspin-jack-bridge.git
 ```
 
-> **Note:** The `aiosendspin` library with source@v1 support must be available. Until it is published to PyPI, install from the source branch:
+> **Note:** The `aiosendspin` library needs the source@v1 branch until it is merged to main:
 >
 > ```
-> pip install git+https://github.com/Sendspin/aiosendspin.git@source-v1
-> pip install sendspin-jack-bridge
+> cd aiosendspin
+> git checkout source-v1
+> cd ..
 > ```
+
+Install both packages (aiosendspin first, then the bridge):
+
+```
+pip install ./aiosendspin
+pip install ./sendspin-jack-bridge
+```
 
 ### Step 5: Run the Bridge
 
