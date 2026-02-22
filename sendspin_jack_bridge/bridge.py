@@ -21,6 +21,7 @@ import sys
 import time
 import uuid
 
+import aiohttp
 import jack
 import numpy as np
 from aiosendspin.client import SendspinClient
@@ -104,6 +105,14 @@ class JackSendspinBridge:
             pass
         except OSError:
             logger.error("Could not connect to Sendspin server at %s", self._server_url)
+        except aiohttp.WSServerHandshakeError as err:
+            logger.error(
+                "Server rejected WebSocket connection (%s %s) — check the URL path"
+                " (should end with /sendspin): %s",
+                err.status,
+                err.message,
+                self._server_url,
+            )
         except Exception:
             logger.exception("Unexpected error")
         finally:
