@@ -102,6 +102,10 @@ class JackSendspinBridge:
             await self._audio_consumer_loop()
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
+        except OSError:
+            logger.error("Could not connect to Sendspin server at %s", self._server_url)
+        except Exception:
+            logger.exception("Unexpected error")
         finally:
             await self._cleanup()
 
@@ -386,7 +390,7 @@ class JackSendspinBridge:
 
         await self._stop_streaming()
 
-        if self._sendspin_client and self._sendspin_client.connected:
+        if self._sendspin_client:
             await self._sendspin_client.disconnect()
             logger.info("Disconnected from Sendspin server")
 
