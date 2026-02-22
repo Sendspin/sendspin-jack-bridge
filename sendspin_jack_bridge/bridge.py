@@ -17,6 +17,7 @@ import asyncio
 import logging
 import signal
 import struct
+import sys
 import time
 import uuid
 
@@ -88,9 +89,10 @@ class JackSendspinBridge:
         """Set up JACK + Sendspin and stream until shutdown."""
         loop = asyncio.get_running_loop()
 
-        # Install signal handlers
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self._shutdown_event.set)
+        # Install signal handlers (add_signal_handler is not supported on Windows)
+        if sys.platform != "win32":
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, self._shutdown_event.set)
 
         try:
             self._setup_jack()
@@ -98,7 +100,7 @@ class JackSendspinBridge:
             await self._wait_for_time_sync()
             await self._start_streaming()
             await self._audio_consumer_loop()
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
             await self._cleanup()
