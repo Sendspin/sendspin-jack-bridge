@@ -6,8 +6,8 @@ microphone, line-in, software synth) can be distributed via Sendspin
 to synchronized players.
 
 Usage:
-    sendspin-jack-bridge --server ws://192.168.1.100:8927/ws
-    python -m sendspin_jack_bridge --server ws://192.168.1.100:8927/ws
+    sendspin-jack-bridge --server ws://192.168.1.100:8927/sendspin
+    python -m sendspin_jack_bridge --server ws://192.168.1.100:8927/sendspin
 """
 
 from __future__ import annotations
@@ -409,7 +409,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--server",
         required=True,
-        help="Sendspin server WebSocket URL (e.g., ws://192.168.1.100:8927/ws)",
+        help="Sendspin server WebSocket URL (e.g., ws://192.168.1.100:8927/sendspin)",
     )
     parser.add_argument(
         "--name",

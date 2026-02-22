@@ -75,15 +75,27 @@ pip install ./sendspin-jack-bridge
 
 > **Tip:** Make sure you run `pip install` from the directory that **contains** these folders, not from inside them.
 
-### Step 5: Run the Bridge
+### Step 5: Start the Sendspin Server
 
-With QjackCtl running and the JACK server started:
+The bridge needs a running Sendspin server to connect to. Open a **separate terminal** and start the server:
 
 ```
-sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/ws
+python -c "import asyncio; from aiosendspin.server.server import SendspinServer; loop = asyncio.new_event_loop(); server = SendspinServer(loop=loop, server_id='home', server_name='Home'); loop.run_until_complete(server.start_server(port=8927)); print('Sendspin server running on port 8927 — press Ctrl+C to stop'); loop.run_forever()"
 ```
 
-Replace `YOUR_SERVER_IP` with the IP address of your Sendspin server.
+You should see log output confirming the server started on port 8927. Leave this terminal open.
+
+> **Tip:** If you're running the server on a different machine, note its IP address — you'll need it in the next step.
+
+### Step 6: Run the Bridge
+
+With QjackCtl running, the JACK server started, and the Sendspin server running:
+
+```
+sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/sendspin
+```
+
+Replace `YOUR_SERVER_IP` with the IP address of the machine running the Sendspin server (use `localhost` if it's the same machine).
 
 You should see output like:
 
@@ -91,20 +103,20 @@ You should see output like:
 2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Creating JACK client 'sendspin'
 2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: JACK: sample_rate=48000, blocksize=1024, channels=2
 2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: JACK client activated
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Connecting to Sendspin server at ws://192.168.1.100:8927/ws
+2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Connecting to Sendspin server at ws://localhost:8927/sendspin
 2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Connected to Sendspin server
 2026-02-21 12:00:01 INFO     sendspin_jack_bridge.bridge: Time synchronization converged
 2026-02-21 12:00:01 INFO     sendspin_jack_bridge.bridge: Streaming started: PCM 48000Hz 2ch 16bit
 ```
 
-### Step 6: Connect Your Audio Source
+### Step 7: Connect Your Audio Source
 
 The bridge registers JACK input ports (`sendspin:input_L` and `sendspin:input_R`). You need to connect an audio source to these ports.
 
 **Option A — Auto-connect on startup:**
 
 ```
-sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/ws --connect "system:capture_*"
+sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/sendspin --connect "system:capture_*"
 ```
 
 This automatically connects your system's physical capture ports (microphone, line-in) to the bridge.
@@ -116,7 +128,7 @@ This automatically connects your system's physical capture ports (microphone, li
 3. Find `sendspin` on the right (input_L, input_R).
 4. Draw connections from source to destination by dragging or selecting and clicking **Connect**.
 
-### Step 7: Verify on Players
+### Step 8: Verify on Players
 
 Once connected, audio should be streaming to the Sendspin server and playing on all connected Sendspin players in your group. Check the server logs or a connected player to confirm audio is being received.
 
@@ -142,7 +154,7 @@ sendspin-jack-bridge --help
 Stream a turntable connected to a USB audio interface:
 
 ```
-sendspin-jack-bridge --server ws://192.168.1.100:8927/ws \
+sendspin-jack-bridge --server ws://192.168.1.100:8927/sendspin \
   --name "Turntable" \
   --connect "system:capture_*"
 ```
@@ -150,7 +162,7 @@ sendspin-jack-bridge --server ws://192.168.1.100:8927/ws \
 Stream mono microphone input at 24-bit:
 
 ```
-sendspin-jack-bridge --server ws://192.168.1.100:8927/ws \
+sendspin-jack-bridge --server ws://192.168.1.100:8927/sendspin \
   --name "Microphone" \
   --channels 1 \
   --bit-depth 24 \
@@ -164,9 +176,10 @@ sendspin-jack-bridge --server ws://192.168.1.100:8927/ws \
 - Verify your audio device is selected in QjackCtl Setup.
 - Check available ports: in QjackCtl, click **Graph** to see all registered ports.
 
-**"Failed to connect to Sendspin server"**
-- Verify the server URL is correct and the server is running.
-- Check that your firewall allows outbound WebSocket connections on the server port.
+**"Could not connect to Sendspin server"**
+- Verify the Sendspin server is running (Step 5) and the URL is correct.
+- Make sure the URL path ends with `/sendspin` (e.g., `ws://localhost:8927/sendspin`).
+- Check that your firewall allows WebSocket connections on port 8927.
 
 **Audio is choppy or has dropouts**
 - Increase the JACK buffer size (Frames/Period) in QjackCtl Setup.
