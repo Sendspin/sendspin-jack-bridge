@@ -73,6 +73,8 @@ pip install ./aiosendspin
 pip install ./sendspin-jack-bridge
 ```
 
+> **Tip:** Make sure you run `pip install` from the directory that **contains** these folders, not from inside them.
+
 ### Step 5: Run the Bridge
 
 With QjackCtl running and the JACK server started:
