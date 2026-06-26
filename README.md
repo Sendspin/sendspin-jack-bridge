@@ -58,13 +58,20 @@ git clone https://github.com/Sendspin/aiosendspin.git
 git clone https://github.com/Sendspin/sendspin-jack-bridge.git
 ```
 
-> **Note:** The `aiosendspin` library needs the source@v1 branch until it is merged to main:
+> **⚠️ This step is currently broken.** The `aiosendspin` library needs a
+> `source@v1` role that was never merged upstream — and the `source-v1` branch
+> this instruction points to has since been **deleted** from GitHub, so the
+> `git checkout source-v1` below will fail:
 >
 > ```
 > cd aiosendspin
-> git checkout source-v1
+> git checkout source-v1   # ← branch no longer exists; this fails
 > cd ..
 > ```
+>
+> See [`docs/source-role-status.md`](docs/source-role-status.md) for the full
+> situation (what the bridge depends on, where the source code still survives,
+> and the options for reviving it) before attempting to install.
 
 Install both packages (aiosendspin first, then the bridge):
 
