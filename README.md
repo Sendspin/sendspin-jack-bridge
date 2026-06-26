@@ -10,127 +10,98 @@ This bridge acts as a Sendspin `source@v1` client — it captures audio, timesta
 - JACK Audio Connection Kit
 - A running Sendspin server
 
-## Windows Setup (Step by Step)
+## Windows Setup
 
-### Step 1: Install Python
+Three PowerShell scripts in [`scripts/`](scripts/) automate the command-line
+parts of setup. First complete the GUI prerequisites below (these can't be
+scripted reliably), then use the scripts.
 
-Download and install Python 3.12+ from [python.org](https://www.python.org/downloads/).
+### Prerequisites (install these by hand first)
 
-During installation, **check "Add Python to PATH"**.
+1. **Install Python 3.12+** from [python.org](https://www.python.org/downloads/).
+   During installation, **check "Add Python to PATH"**. Verify with
+   `python --version`.
 
-Verify it works by opening a terminal (PowerShell or Command Prompt):
+2. **Install JACK Audio.** Download the **JACK2 64-bit installer** from the
+   [JACK downloads page](https://jackaudio.org/downloads/) and choose
+   **"Full installation (with JACK-Router)"** — this installs the JACK server
+   (`jackd`), the JACK library DLLs (needed by the Python bridge), QjackCtl,
+   and JACK-Router. **Reboot** afterwards so the JACK DLLs are on your PATH.
 
+3. **Start the JACK server.** Launch **QjackCtl**, click **Setup** to choose
+   your **Interface** (audio device), **Sample Rate**, and **Frames/Period**
+   (1024 is a good starting point), click **OK**, then click **Start**. The
+   status should change to "Started".
+
+### Quick start with the scripts
+
+From the repository root in **PowerShell**:
+
+```powershell
+# 1. One-time install: checks prerequisites, clones aiosendspin (source-v1),
+#    and installs aiosendspin + this bridge with pip.
+.\scripts\install.ps1
+
+# 2. Start a local Sendspin server (leave this terminal open).
+.\scripts\start-server.ps1
+
+# 3. In a separate terminal, launch the bridge and auto-connect capture ports.
+.\scripts\run-bridge.ps1 -Connect "system:capture_*"
 ```
-python --version
-```
 
-### Step 2: Install JACK Audio
+Each script supports `-?` for full help on its parameters:
 
-1. Download the **JACK2 64-bit installer** from the [JACK downloads page](https://jackaudio.org/downloads/) (the GitHub releases link for "JACK 1.9.22 win64").
+- **`install.ps1`** — one-time setup. Clones `aiosendspin` as a sibling folder
+  next to this repo, then installs both packages. Safe to re-run.
+- **`start-server.ps1`** — starts the Sendspin server. Defaults to
+  `-Port 8927 -ServerId home -ServerName Home`.
+- **`run-bridge.ps1`** — launches the bridge. Defaults to
+  `-Server ws://localhost:8927/sendspin`; pass `-Connect "system:capture_*"`
+  to auto-connect your physical capture ports, or omit it to wire ports up
+  manually in QjackCtl's **Graph** (connect `system` capture ports to the
+  `sendspin` input ports). For other options (e.g. `--name`, `--channels`,
+  `--verbose`), run `sendspin-jack-bridge` directly — see
+  [Command-Line Options](#command-line-options) and [Examples](#examples).
 
-2. Run the installer. When prompted, select **"Full installation (with JACK-Router)"**. This installs:
-   - The JACK server (`jackd`)
-   - The JACK library DLLs (needed by the Python bridge)
-   - QjackCtl (graphical control panel)
-   - JACK-Router (virtual ASIO driver for routing audio between apps)
+If the server runs on another machine, point the bridge at it:
+`.\scripts\run-bridge.ps1 -Server ws://YOUR_SERVER_IP:8927/sendspin`.
 
-3. **Reboot** after installation to ensure the JACK DLLs are on your system PATH.
+Once connected, audio streams to the Sendspin server and plays on all connected
+players in your group. Check the server logs or a player to confirm.
 
-### Step 3: Start the JACK Server
+### Manual setup (without the scripts)
 
-1. Launch **QjackCtl** from the Windows Start menu.
+If you'd rather run the commands yourself, the scripts wrap these steps. From a
+folder that will **contain** both repos:
 
-2. Click **Setup** and configure:
-   - **Interface**: Select your audio device (soundcard, USB interface, etc.)
-   - **Sample Rate**: Choose your preferred rate (44100, 48000, etc.)
-   - **Frames/Period**: Start with 1024 (lower = less latency but more CPU)
-
-3. Click **OK**, then click **Start** to launch the JACK server.
-
-   You should see the server status change to "Started" with your sample rate displayed.
-
-### Step 4: Install the Bridge
-
-Open a terminal and clone the repos:
-
-```
+```powershell
+# Clone aiosendspin (source-v1 branch) next to this repo.
 git clone https://github.com/Sendspin/aiosendspin.git
-git clone https://github.com/Sendspin/sendspin-jack-bridge.git
-```
+cd aiosendspin; git checkout source-v1; cd ..
 
-> **Note:** The `aiosendspin` library needs the source@v1 branch until it is merged to main:
->
-> ```
-> cd aiosendspin
-> git checkout source-v1
-> cd ..
-> ```
-
-Install both packages (aiosendspin first, then the bridge):
-
-```
+# Install aiosendspin first, then the bridge.
 pip install ./aiosendspin
 pip install ./sendspin-jack-bridge
 ```
 
-> **Tip:** Make sure you run `pip install` from the directory that **contains** these folders, not from inside them.
+> **Tip:** Run `pip install` from the directory that **contains** these folders,
+> not from inside them.
 
-### Step 5: Start the Sendspin Server
-
-The bridge needs a running Sendspin server to connect to. Open a **separate terminal** and start the server:
+Start the Sendspin server in a separate terminal:
 
 ```
 python -c "import asyncio; from aiosendspin.server.server import SendspinServer; loop = asyncio.new_event_loop(); server = SendspinServer(loop=loop, server_id='home', server_name='Home'); loop.run_until_complete(server.start_server(port=8927)); print('Sendspin server running on port 8927 — press Ctrl+C to stop'); loop.run_forever()"
 ```
 
-You should see log output confirming the server started on port 8927. Leave this terminal open.
-
-> **Tip:** If you're running the server on a different machine, note its IP address — you'll need it in the next step.
-
-### Step 6: Run the Bridge
-
-With QjackCtl running, the JACK server started, and the Sendspin server running:
-
-```
-sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/sendspin
-```
-
-Replace `YOUR_SERVER_IP` with the IP address of the machine running the Sendspin server (use `localhost` if it's the same machine).
-
-You should see output like:
-
-```
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Creating JACK client 'sendspin'
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: JACK: sample_rate=48000, blocksize=1024, channels=2
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: JACK client activated
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Connecting to Sendspin server at ws://localhost:8927/sendspin
-2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Connected to Sendspin server
-2026-02-21 12:00:01 INFO     sendspin_jack_bridge.bridge: Time synchronization converged
-2026-02-21 12:00:01 INFO     sendspin_jack_bridge.bridge: Streaming started: PCM 48000Hz 2ch 16bit
-```
-
-### Step 7: Connect Your Audio Source
-
-The bridge registers JACK input ports (`sendspin:input_L` and `sendspin:input_R`). You need to connect an audio source to these ports.
-
-**Option A — Auto-connect on startup:**
+Then run the bridge (use `localhost` if the server is on the same machine):
 
 ```
 sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/sendspin --connect "system:capture_*"
 ```
 
-This automatically connects your system's physical capture ports (microphone, line-in) to the bridge.
-
-**Option B — Connect manually in QjackCtl:**
-
-1. In QjackCtl, click **Graph** (or **Connect**).
-2. Find your audio source on the left (e.g., `system` capture ports).
-3. Find `sendspin` on the right (input_L, input_R).
-4. Draw connections from source to destination by dragging or selecting and clicking **Connect**.
-
-### Step 8: Verify on Players
-
-Once connected, audio should be streaming to the Sendspin server and playing on all connected Sendspin players in your group. Check the server logs or a connected player to confirm audio is being received.
+The bridge registers JACK input ports (`sendspin:input_L`, `sendspin:input_R`).
+Without `--connect`, connect your audio source to them manually in QjackCtl's
+**Graph**.
 
 ## Command-Line Options
 
