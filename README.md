@@ -51,41 +51,28 @@ python --version
 
 ### Step 4: Install the Bridge
 
-Open a terminal and clone the repos:
+Clone and install the bridge; pip installs a compatible released aiosendspin automatically:
 
 ```
-git clone https://github.com/Sendspin/aiosendspin.git
 git clone https://github.com/Sendspin/sendspin-jack-bridge.git
+python -m pip install ./sendspin-jack-bridge
 ```
 
-> **Note:** The `aiosendspin` library needs the source@v1 branch until it is merged to main:
->
-> ```
-> cd aiosendspin
-> git checkout source-v1
-> cd ..
-> ```
-
-Install both packages (aiosendspin first, then the bridge):
+The bridge requires `aiosendspin>=9.1.1,<10`. Music Assistant 2.10.2 uses
+aiosendspin 9.1.1. To reproduce that exact combination, install with:
 
 ```
-pip install ./aiosendspin
-pip install ./sendspin-jack-bridge
+python -m pip install ./sendspin-jack-bridge "aiosendspin==9.1.1"
 ```
 
-> **Tip:** Make sure you run `pip install` from the directory that **contains** these folders, not from inside them.
+A separate aiosendspin checkout or the old `source-v1` branch is no longer needed.
+For development, run `uv sync --locked` inside the bridge repository.
 
-### Step 5: Start the Sendspin Server
+### Step 5: Prepare the Sendspin Server
 
-The bridge needs a running Sendspin server to connect to. Open a **separate terminal** and start the server:
-
-```
-python -c "import asyncio; from aiosendspin.server.server import SendspinServer; loop = asyncio.new_event_loop(); server = SendspinServer(loop=loop, server_id='home', server_name='Home'); loop.run_until_complete(server.start_server(port=8927)); print('Sendspin server running on port 8927 — press Ctrl+C to stop'); loop.run_forever()"
-```
-
-You should see log output confirming the server started on port 8927. Leave this terminal open.
-
-> **Tip:** If you're running the server on a different machine, note its IP address — you'll need it in the next step.
+Start a compatible Sendspin server, such as Music Assistant 2.10.2, and enable
+its Sendspin provider. Use its WebSocket URL in the next step. For Music Assistant,
+the default URL is `ws://YOUR_SERVER_IP:8927/sendspin`.
 
 ### Step 6: Run the Bridge
 
@@ -97,7 +84,11 @@ sendspin-jack-bridge --server ws://YOUR_SERVER_IP:8927/sendspin
 
 Replace `YOUR_SERVER_IP` with the IP address of the machine running the Sendspin server (use `localhost` if it's the same machine).
 
-You should see output like:
+Pair the source in your server's interface. During pairing, the bridge logs a code
+to enter on the server. Once paired and synchronized, it waits for the server to
+request source playback; connecting JACK ports alone does not start streaming.
+
+After selecting this source for playback, you should see output like:
 
 ```
 2026-02-21 12:00:00 INFO     sendspin_jack_bridge.bridge: Creating JACK client 'sendspin'
@@ -130,7 +121,7 @@ This automatically connects your system's physical capture ports (microphone, li
 
 ### Step 8: Verify on Players
 
-Once connected, audio should be streaming to the Sendspin server and playing on all connected Sendspin players in your group. Check the server logs or a connected player to confirm audio is being received.
+Select this source and start playback on the desired player or group in your server. The server sends source start and stop commands to the bridge. Confirm audio on a selected player.
 
 ## Command-Line Options
 
@@ -142,12 +133,38 @@ sendspin-jack-bridge --help
 |---|---|---|
 | `--server URL` | *(required)* | Sendspin server WebSocket URL |
 | `--name NAME` | `Sendspin JACK Bridge` | Friendly name shown on the server |
-| `--client-id ID` | *(auto-generated)* | Unique client identifier |
+| `--client-id ID` | *(none)* | Deprecated; logs a warning and is ignored |
+| `--state-dir PATH` | `~/.config/sendspin-jack-bridge` | Persistent identity and pairing state; separate directory per instance |
 | `--jack-name NAME` | `sendspin` | JACK client name |
 | `--channels {1,2}` | `2` | Number of audio channels (mono or stereo) |
 | `--bit-depth {16,24}` | `16` | PCM bit depth |
 | `--connect PATTERN` | *(none)* | Auto-connect to JACK ports matching this pattern |
 | `-v, --verbose` | off | Enable debug logging |
+
+## Identity and Pairing
+
+The bridge stores its identity in `identity.key` and trusted pairings in
+`pairings.json` under `--state-dir`. The default is the user's home directory
+followed by `.config/sendspin-jack-bridge` on Linux, macOS, and Windows. This
+preserves existing installations; it does not follow XDG or Windows AppData
+overrides. Use `--state-dir` to choose another location.
+
+The cryptographic identity determines the client ID. The old `--client-id` option
+is accepted with a deprecation warning, but cannot override that identity. For
+multiple sources, give each bridge its own state directory and JACK client name.
+Only one bridge process may use a state directory at a time. The `bridge.lock`
+file may remain after exit; do not delete it while a bridge is running.
+
+Identity creation is atomic. New identity files are owner-only on POSIX; on
+Windows, protect the directory with your user account's filesystem ACLs. Keep
+identity and pairing files private and together when backing up or moving a
+source. An empty or corrupt identity causes startup to fail rather than silently
+creating a new client. Restore it from a trusted backup to preserve pairings.
+
+On disconnect or a capture error the bridge exits and releases JACK resources.
+It does not automatically reconnect; start it again to reconnect using the same
+identity and pairings. Signal detection and automatic playback when audio appears
+are not implemented.
 
 ## Examples
 
@@ -188,7 +205,8 @@ sendspin-jack-bridge --server ws://192.168.1.100:8927/sendspin \
 
 **Bridge starts but no audio reaches players**
 - Check QjackCtl Graph to confirm audio connections exist between your source and the `sendspin` input ports.
-- Use `--verbose` to see debug output including timestamp calibration and audio chunk sends.
+- Confirm that pairing completed and the source is selected for playback on the server.
+- Use `--verbose` to see debug output including timestamp calibration.
 
 ## License
 

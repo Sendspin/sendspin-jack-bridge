@@ -19,25 +19,24 @@ import signal
 import struct
 import sys
 import time
-import uuid
+from contextlib import ExitStack
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiohttp
 import jack
 import numpy as np
-from aiosendspin.client import SendspinClient
-from aiosendspin.models.source import (
-    ClientHelloSourceSupport,
-    InputStreamStartSource,
-    SourceCommandPayload,
-    SourceFormat,
-    SourceStatePayload,
-)
-from aiosendspin.models.types import (
-    AudioCodec,
-    Roles,
-    SourceCommand,
-    SourceStateType,
-)
+from aiosendspin.client import PairingSupport, SendspinClient, SourceCapture
+from aiosendspin.clock import LoopClock
+from aiosendspin.models.player import SupportedAudioFormat
+from aiosendspin.models.source import ClientHelloSourceSupport
+from aiosendspin.models.types import AudioCodec, Roles
+from aiosendspin.noise.trust_store import FileClientPairingStore
+
+from sendspin_jack_bridge.state import load_identity, lock_state
+
+if TYPE_CHECKING:
+    from aiosendspin.models.core import ServerCommandPayload
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +62,18 @@ class JackSendspinBridge:
         channels: int = 2,
         bit_depth: int = 16,
         connect_pattern: str | None = None,
+        state_dir: Path | None = None,
     ) -> None:
         self._server_url = server_url
         self._client_name = client_name
-        self._client_id = client_id or f"jack-bridge-{uuid.uuid4().hex[:8]}"
+        if client_id is not None:
+            logger.warning(
+                "--client-id is deprecated and ignored: Sendspin derives the client ID "
+                "from its persistent identity. Use --state-dir for separate instances."
+            )
+        self._state_dir = (
+            state_dir or Path.home() / ".config" / "sendspin-jack-bridge"
+        ).expanduser()
         self._jack_name = jack_name
         self._channels = channels
         self._bit_depth = bit_depth
@@ -74,10 +81,14 @@ class JackSendspinBridge:
 
         self._shutdown_event = asyncio.Event()
         self._streaming = False
+        self._source_requested = False
+        self._source_stop_requested = False
+        self._stream_started_us = 0
 
         # Populated during setup
         self._jack_client: jack.Client | None = None
         self._sendspin_client: SendspinClient | None = None
+        self._source_capture: SourceCapture | None = None
         self._audio_ringbuffer: jack.RingBuffer | None = None
         self._ts_ringbuffer: jack.RingBuffer | None = None
         self._sample_rate: int = 0
@@ -95,28 +106,31 @@ class JackSendspinBridge:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown_event.set)
 
-        try:
-            self._setup_jack()
-            await self._setup_sendspin()
-            await self._wait_for_time_sync()
-            await self._start_streaming()
-            await self._audio_consumer_loop()
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
-        except OSError:
-            logger.error("Could not connect to Sendspin server at %s", self._server_url)
-        except aiohttp.WSServerHandshakeError as err:
-            logger.error(
-                "Server rejected WebSocket connection (%s %s) — check the URL path"
-                " (should end with /sendspin): %s",
-                err.status,
-                err.message,
-                self._server_url,
-            )
-        except Exception:
-            logger.exception("Unexpected error")
-        finally:
-            await self._cleanup()
+        with ExitStack() as state_stack:
+            try:
+                state_stack.enter_context(lock_state(self._state_dir))
+                self._setup_jack()
+                await self._setup_sendspin()
+                await self._wait_for_time_sync()
+                await self._audio_consumer_loop()
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                pass
+            except OSError:
+                logger.exception(
+                    "Could not initialize bridge resources or connect to %s", self._server_url
+                )
+            except aiohttp.WSServerHandshakeError as err:
+                logger.error(
+                    "Server rejected WebSocket connection (%s %s) — check the URL path"
+                    " (should end with /sendspin): %s",
+                    err.status,
+                    err.message,
+                    self._server_url,
+                )
+            except Exception:
+                logger.exception("Unexpected error")
+            finally:
+                await self._cleanup()
 
     def _setup_jack(self) -> None:
         """Create JACK client, register ports, set up ringbuffers."""
@@ -146,6 +160,8 @@ class JackSendspinBridge:
         max_blocks = int(RINGBUFFER_SECONDS * self._sample_rate / self._blocksize) + 16
         self._ts_ringbuffer = jack.RingBuffer(max_blocks * 8)
 
+        loop = asyncio.get_running_loop()
+
         # Set the process callback
         @self._jack_client.set_process_callback  # type: ignore[untyped-decorator]
         def process(frames: int) -> None:
@@ -154,7 +170,7 @@ class JackSendspinBridge:
         @self._jack_client.set_shutdown_callback  # type: ignore[untyped-decorator]
         def shutdown(status: jack.Status, reason: str) -> None:
             logger.warning("JACK shut down: %s (status=%s)", reason, status)
-            self._shutdown_event.set()
+            loop.call_soon_threadsafe(self._shutdown_event.set)
 
         # Activate the JACK client
         self._jack_client.activate()
@@ -239,24 +255,22 @@ class JackSendspinBridge:
 
     async def _setup_sendspin(self) -> None:
         """Create and connect the Sendspin source client."""
-        source_format = SourceFormat(
-            codec=AudioCodec.PCM,
-            channels=self._channels,
-            sample_rate=self._sample_rate,
-            bit_depth=self._bit_depth,
-        )
+        identity = load_identity(self._state_dir)
+        pairing_store = await FileClientPairingStore.open(self._state_dir / "pairings.json")
 
         self._sendspin_client = SendspinClient(
-            client_id=self._client_id,
+            identity=identity,
+            clock=LoopClock(asyncio.get_running_loop()),
             client_name=self._client_name,
             roles=[Roles.SOURCE],
-            source_support=ClientHelloSourceSupport(
-                supported_formats=[source_format],
-            ),
+            pairing_store=pairing_store,
+            pairing_support=PairingSupport(pin_display=self._display_pairing_code),
+            source_support=ClientHelloSourceSupport(),
         )
 
         # Listen for server source commands (start/stop)
-        self._sendspin_client.add_source_command_listener(self._on_source_command)
+        self._sendspin_client.add_server_command_listener(self._on_server_command)
+        self._sendspin_client.add_disconnect_listener(self._on_disconnect)
 
         logger.info("Connecting to Sendspin server at %s", self._server_url)
         await self._sendspin_client.connect(self._server_url)
@@ -274,21 +288,28 @@ class JackSendspinBridge:
             await asyncio.sleep(0.1)
 
     async def _start_streaming(self) -> None:
-        """Send input_stream/start and begin capturing audio."""
+        """Start a source capture after a server request."""
         assert self._sendspin_client is not None
-
-        stream_format = InputStreamStartSource(
+        if self._source_capture is not None:
+            return
+        stream_format = SupportedAudioFormat(
             codec=AudioCodec.PCM,
             channels=self._channels,
             sample_rate=self._sample_rate,
             bit_depth=self._bit_depth,
         )
-        await self._sendspin_client.send_input_stream_start(stream_format)
-        await self._sendspin_client.send_source_state(
-            state=SourceStatePayload(state=SourceStateType.STREAMING)
+        self._source_capture = self._sendspin_client.create_source_capture(stream_format)
+        await self._source_capture.start()
+        # A stop/disconnect may arrive while start() is awaiting network I/O.
+        self._streaming = (
+            self._source_requested
+            and not self._source_stop_requested
+            and not self._shutdown_event.is_set()
         )
-
-        self._streaming = True
+        if not self._streaming:
+            await self._stop_streaming()
+            return
+        self._stream_started_us = self._sendspin_client.now_us()
         logger.info(
             "Streaming started: PCM %dHz %dch %dbit",
             self._sample_rate,
@@ -297,27 +318,45 @@ class JackSendspinBridge:
         )
 
     async def _stop_streaming(self) -> None:
-        """Stop streaming and send input_stream/end."""
-        if not self._streaming:
-            return
-
+        """Stop capture and send client_stream/end, clearing state even on failure."""
         self._streaming = False
+        capture, self._source_capture = self._source_capture, None
+        if capture is not None:
+            try:
+                await capture.stop()
+            finally:
+                logger.info("Streaming stopped")
 
-        if self._sendspin_client and self._sendspin_client.connected:
-            await self._sendspin_client.send_input_stream_end()
-            await self._sendspin_client.send_source_state(
-                state=SourceStatePayload(state=SourceStateType.IDLE)
-            )
-        logger.info("Streaming stopped")
+    async def _display_pairing_code(self, code: str | None) -> None:
+        """Display the source-pairing code in the terminal."""
+        if code is not None:
+            logger.warning("PAIRING CODE: %s", code)
 
-    def _on_source_command(self, payload: SourceCommandPayload) -> None:
+    def _on_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server source commands (start/stop)."""
-        if payload.command == SourceCommand.START:
-            logger.info("Server requested start")
-            asyncio.get_running_loop().create_task(self._start_streaming())
-        elif payload.command == SourceCommand.STOP:
-            logger.info("Server requested stop")
-            asyncio.get_running_loop().create_task(self._stop_streaming())
+        if payload.source is not None and not self._shutdown_event.is_set():
+            # 9.1.1 uses Literal["start", "stop"], with no command enum.
+            self._source_requested = payload.source.command == "start"
+            if not self._source_requested:
+                self._source_stop_requested = True
+                self._streaming = False
+            logger.info("Server requested %s", payload.source.command)
+
+    def _on_disconnect(self) -> None:
+        """Exit on disconnect; captures are bound to a single connection."""
+        self._source_requested = False
+        self._streaming = False
+        self._shutdown_event.set()
+
+    async def _update_source(self) -> None:
+        """Serialize source transitions with feed in the consumer task."""
+        if self._source_stop_requested:
+            self._source_stop_requested = False
+            await self._stop_streaming()
+        if self._source_requested and not self._shutdown_event.is_set():
+            await self._start_streaming()
+        else:
+            await self._stop_streaming()
 
     async def _audio_consumer_loop(self) -> None:
         """Async loop that reads audio from JACK ringbuffer and sends to Sendspin."""
@@ -330,6 +369,9 @@ class JackSendspinBridge:
         last_recalibrate = time.monotonic()
 
         while not self._shutdown_event.is_set():
+            await self._update_source()
+            if self._shutdown_event.is_set():
+                break
             # Periodically recalibrate JACK frame-time to loop-time offset
             now = time.monotonic()
             if now - last_recalibrate > RECALIBRATE_INTERVAL:
@@ -367,14 +409,15 @@ class JackSendspinBridge:
             # Convert JACK frame time to asyncio loop time (microseconds)
             capture_timestamp_us = self._jack_frame_to_loop_us(jack_frame_time)
 
-            # Send to Sendspin
-            try:
-                await self._sendspin_client.send_source_audio_chunk(
+            # Source transitions and feed share this task, so stop cannot race feed.
+            if (
+                self._streaming
+                and self._source_capture is not None
+                and capture_timestamp_us >= self._stream_started_us
+            ):
+                await self._source_capture.feed(
                     pcm_bytes, capture_timestamp_us=capture_timestamp_us
                 )
-            except Exception:
-                logger.exception("Failed to send audio chunk")
-                await asyncio.sleep(0.1)
 
     def _float32_to_pcm(self, samples: np.ndarray) -> bytes:
         """Convert float32 audio samples to PCM bytes."""
@@ -397,16 +440,22 @@ class JackSendspinBridge:
         """Graceful shutdown of JACK and Sendspin."""
         logger.info("Shutting down...")
 
-        await self._stop_streaming()
-
-        if self._sendspin_client:
-            await self._sendspin_client.disconnect()
-            logger.info("Disconnected from Sendspin server")
-
-        if self._jack_client:
-            self._jack_client.deactivate()
-            self._jack_client.close()
-            logger.info("JACK client closed")
+        self._shutdown_event.set()
+        self._source_requested = False
+        try:
+            await self._stop_streaming()
+        finally:
+            try:
+                if self._sendspin_client:
+                    await self._sendspin_client.disconnect()
+                    logger.info("Disconnected from Sendspin server")
+            finally:
+                if self._jack_client:
+                    try:
+                        self._jack_client.deactivate()
+                    finally:
+                        self._jack_client.close()
+                    logger.info("JACK client closed")
 
 
 def parse_args() -> argparse.Namespace:
@@ -428,7 +477,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--client-id",
         default=None,
-        help="Unique client ID (default: auto-generated)",
+        help="Deprecated and ignored; client identity is persistent (use --state-dir)",
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=Path.home() / ".config" / "sendspin-jack-bridge",
+        help="Persistent identity and pairing directory; use a separate directory per instance",
     )
     parser.add_argument(
         "--jack-name",
@@ -477,6 +532,7 @@ def main() -> None:
         server_url=args.server,
         client_name=args.name,
         client_id=args.client_id,
+        state_dir=args.state_dir,
         jack_name=args.jack_name,
         channels=args.channels,
         bit_depth=args.bit_depth,
