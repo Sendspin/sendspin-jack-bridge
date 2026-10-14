@@ -1,3 +1,6 @@
+> [!CAUTION]
+> **This library is currently unmaintained.** If you want to maintain it, please reach out here or on Discord.
+
 # Sendspin JACK Bridge
 
 Stream audio from [JACK Audio Connection Kit](https://jackaudio.org/) to a [Sendspin](https://github.com/Sendspin) server. Any JACK-connected audio source (turntable, microphone, line-in, software synth) can be distributed via Sendspin to synchronized players on your network.
